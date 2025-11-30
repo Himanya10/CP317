@@ -1,5 +1,5 @@
 //
-//  MedicationReconciliationView.swift
+//  MediVisionView.swift
 //  CP317-Application
 //
 
@@ -10,7 +10,11 @@ struct MedicationReconciliationView: View {
     @StateObject private var viewModel = MedicationReconciliationViewModel()
     @State private var showingImagePicker = false
     @State private var showingCamera = false
-    @State private var showingHistory = false
+    
+    // State for editing sheets
+    @State private var editingMedication: Medication?
+    @State private var addingToSlot: TimeSlot?
+    @State private var showingManualAddSheet = false
     
     var body: some View {
         NavigationStack {
@@ -19,15 +23,18 @@ struct MedicationReconciliationView: View {
                 
                 ScrollView {
                     VStack(spacing: 24) {
-                        if viewModel.status == .idle {
-                            heroSection
-                            uploadSection
-                        } else if viewModel.status == .analyzing {
+                        
+                        // 1. If we are currently scanning/analyzing, show that flow
+                        if viewModel.status == .analyzing {
                             analyzingSection
-                        } else if viewModel.status == .reviewPending {
-                            reviewSection
-                        } else if viewModel.status == .approved {
-                            approvedSection
+                        }
+                        else if viewModel.status == .reviewPending {
+                            // Show review of NEW items found
+                            reviewNewScanSection
+                        }
+                        else {
+                            // 2. Otherwise, show the Master Schedule (Main View)
+                            masterScheduleSection
                         }
                     }
                     .padding(.vertical)
@@ -35,14 +42,25 @@ struct MedicationReconciliationView: View {
             }
             .navigationTitle("MediVision")
             .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingHistory = true }) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .foregroundColor(.pgAccent)
-                    }
+            // Edit Sheet
+            .sheet(item: $editingMedication) { med in
+                EditMedicationSheet(medication: med) { updatedMed in
+                    viewModel.updateMedication(updatedMed)
                 }
             }
+            // Add Sheet (Via Slot)
+            .sheet(item: $addingToSlot) { slot in
+                AddMedicationSheet(timeSlot: slot) { name, dose, freq, slot in
+                    viewModel.addNewManualMedication(name: name, dosage: dose, frequency: freq, timeSlot: slot)
+                }
+            }
+            // Manual Add Sheet (Global)
+            .sheet(isPresented: $showingManualAddSheet) {
+                AddMedicationSheet(timeSlot: .morning) { name, dose, freq, slot in
+                    viewModel.addNewManualMedication(name: name, dosage: dose, frequency: freq, timeSlot: slot)
+                }
+            }
+            // Image Pickers
             .sheet(isPresented: $showingImagePicker) {
                 ReconciliationImagePicker(images: $viewModel.selectedImages)
             }
@@ -52,9 +70,7 @@ struct MedicationReconciliationView: View {
                     set: { if let img = $0 { viewModel.addImage(img) } }
                 ))
             }
-            .sheet(isPresented: $showingHistory) {
-                MedicationReconciliationHistoryView(viewModel: viewModel)
-            }
+            // Error Alert
             .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") { viewModel.errorMessage = nil }
             } message: {
@@ -63,332 +79,225 @@ struct MedicationReconciliationView: View {
                 }
             }
         }
-    }
-    
-    // MARK: - Hero Section
-    
-    private var heroSection: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(Color.pgAccent.opacity(0.2))
-                    .frame(width: 80, height: 80)
-                
-                Image(systemName: "cross.case.fill")
-                    .font(.system(size: 40))
-                    .foregroundColor(.pgAccent)
-            }
-            
-            VStack(spacing: 8) {
-                Text("Smart Medication Manager")
-                    .font(.title.bold())
-                    .foregroundColor(.lightText)
-                
-                Text("Scan discharge papers and pill bottles to create a unified medication schedule")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
+        // FIX: Allow analysis trigger even if status is .approved (after first upload)
+        .onChange(of: viewModel.selectedImages) { images in
+            if !images.isEmpty {
+                // If we are in a browsing state (idle or approved), start analysis
+                if viewModel.status == .idle || viewModel.status == .approved {
+                    viewModel.analyzeImages()
+                }
             }
         }
-        .padding(.top, 32)
     }
     
-    // MARK: - Upload Section
+    // MARK: - Master Schedule Section (Main View)
     
-    private var uploadSection: some View {
-        VStack(spacing: 16) {
-            // Upload Card
-            ZStack {
-                RoundedRectangle(cornerRadius: 24)
-                    .stroke(style: StrokeStyle(lineWidth: 2, dash: [10]))
-                    .foregroundColor(.pgAccent.opacity(0.5))
-                    .background(
-                        RoundedRectangle(cornerRadius: 24)
-                            .fill(Color.cardBackground.opacity(0.5))
-                    )
+    private var masterScheduleSection: some View {
+        VStack(spacing: 20) {
+            
+            // --- Top Header (View Only) ---
+            HStack {
+                Image(systemName: "cross.case.fill")
+                    .font(.title)
+                    .foregroundColor(.pgAccent)
                 
-                VStack(spacing: 20) {
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 60))
+                Text("My Schedule")
+                    .font(.title2.bold())
+                    .foregroundColor(.lightText)
+                
+                Spacer()
+                
+                // Language Picker
+                Menu {
+                    Picker("Language", selection: $viewModel.selectedLanguage) {
+                        Text("English").tag("English")
+                        Text("Spanish").tag("Spanish")
+                        Text("French").tag("French")
+                        Text("Chinese").tag("Chinese (Simplified)")
+                    }
+                } label: {
+                    Image(systemName: "globe")
                         .foregroundColor(.pgAccent)
+                        .padding(8)
+                        .background(Color.cardBackground)
+                        .clipShape(Circle())
+                }
+                
+                // PDF Button
+                Button(action: { viewModel.exportToPDF() }) {
+                    Image(systemName: "square.and.arrow.up")
+                        .foregroundColor(.pgAccent)
+                        .padding(8)
+                        .background(Color.cardBackground)
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.horizontal)
+            
+            // --- The Schedule List ---
+            if viewModel.masterSchedule.medications.isEmpty {
+                // Empty State
+                VStack(spacing: 24) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 60))
+                        .foregroundColor(.secondary.opacity(0.5))
                     
-                    Text("Upload Images")
-                        .font(.headline)
-                        .foregroundColor(.lightText)
-                    
-                    Text("Take photos or select from library")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
+                    VStack(spacing: 8) {
+                        Text("No medications yet")
+                            .font(.headline)
+                            .foregroundColor(.lightText)
+                        Text("Use the buttons below to create your schedule")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(.vertical, 40)
+            } else {
+                ReconciliationScheduleView(
+                    schedule: viewModel.displayResult.schedule,
+                    medications: viewModel.displayResult.medications,
+                    warnings: viewModel.displayResult.warnings,
+                    isEditable: true,
+                    scheduleName: "",
+                    labels: viewModel.translatedLabels,
+                    onMove: { id, from, to in
+                        viewModel.moveMedication(id: id, from: from, to: to)
+                    },
+                    onDelete: { id in
+                        viewModel.deleteMedication(id: id)
+                    },
+                    onEdit: { med in
+                        editingMedication = med
+                    },
+                    onAdd: { slot in
+                        addingToSlot = slot
+                    }
+                )
+                .padding(.horizontal)
+            }
+            
+            // --- Bottom Action Section (Add More) ---
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Add to Schedule")
+                    .font(.headline)
+                    .foregroundColor(.lightText)
+                    .padding(.horizontal)
+                
+                VStack(spacing: 12) {
+                    // 1. Scan Options
                     HStack(spacing: 12) {
                         Button(action: { showingCamera = true }) {
-                            Label("Camera", systemImage: "camera")
-                                .font(.subheadline.bold())
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.pgAccent)
-                                .cornerRadius(12)
+                            HStack {
+                                Image(systemName: "camera.fill")
+                                Text("Scan Camera")
+                            }
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.pgAccent)
+                            .cornerRadius(12)
                         }
                         
                         Button(action: { showingImagePicker = true }) {
-                            Label("Library", systemImage: "photo.on.rectangle")
-                                .font(.subheadline.bold())
-                                .foregroundColor(.pgAccent)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.pgAccent.opacity(0.2))
-                                .cornerRadius(12)
-                        }
-                    }
-                    .padding(.horizontal)
-                }
-                .padding(32)
-            }
-            .frame(height: 320)
-            .padding(.horizontal)
-            
-            // Preview Grid
-            if !viewModel.selectedImages.isEmpty {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Scanned Items (\(viewModel.selectedImages.count))")
-                            .font(.headline)
-                            .foregroundColor(.lightText)
-                        
-                        Spacer()
-                        
-                        Button("Clear All") {
-                            viewModel.selectedImages.removeAll()
-                        }
-                        .font(.caption.bold())
-                        .foregroundColor(.red)
-                    }
-                    .padding(.horizontal)
-                    
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(Array(viewModel.selectedImages.enumerated()), id: \.offset) { index, image in
-                                ZStack(alignment: .topTrailing) {
-                                    Image(uiImage: image)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 100, height: 100)
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                                    
-                                    Button(action: { viewModel.removeImage(at: index) }) {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .foregroundColor(.red)
-                                            .background(Circle().fill(Color.white))
-                                    }
-                                    .offset(x: 8, y: -8)
-                                }
+                            HStack {
+                                Image(systemName: "photo.on.rectangle")
+                                Text("Upload Photo")
                             }
+                            .font(.headline)
+                            .foregroundColor(.pgAccent)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.pgAccent.opacity(0.15))
+                            .cornerRadius(12)
                         }
-                        .padding(.horizontal)
                     }
                     
-                    Button(action: { viewModel.analyzeImages() }) {
+                    // 2. Manual Add Option
+                    Button(action: { showingManualAddSheet = true }) {
                         HStack {
-                            Image(systemName: "sparkles")
-                            Text("Analyze \(viewModel.selectedImages.count) Images")
+                            Image(systemName: "pencil.circle")
+                            Text("Manually Add Medication")
                         }
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.pgSecondary)
-                        .cornerRadius(12)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 8)
                     }
-                    .padding(.horizontal)
                 }
+                .padding()
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color.cardBackground)
+                )
+                .padding(.horizontal)
+            }
+            .padding(.bottom, 30)
+        }
+    }
+    
+    // MARK: - Review New Scan Section
+    
+    private var reviewNewScanSection: some View {
+        VStack(spacing: 20) {
+            Text("Review Scanned Items")
+                .font(.title2.bold())
+                .foregroundColor(.lightText)
+            
+            Text("These items will be added to your existing schedule.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            if let result = viewModel.currentScanResult {
+                ScrollView {
+                    ReconciliationMedicationList(medications: result.medications)
+                        .padding(.horizontal)
+                }
+                
+                // Approve/Cancel Buttons
+                HStack(spacing: 16) {
+                    Button(action: { viewModel.resetFlow() }) {
+                        Text("Discard")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.red.opacity(0.2))
+                            .foregroundColor(.red)
+                            .cornerRadius(12)
+                    }
+                    
+                    Button(action: { viewModel.approveCurrentScan() }) {
+                        Text("Add to Schedule")
+                            .bold()
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.green)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 20)
             }
         }
     }
     
     // MARK: - Analyzing Section
-    
     private var analyzingSection: some View {
         VStack(spacing: 20) {
             ProgressView()
                 .scaleEffect(1.5)
                 .tint(.pgAccent)
             
-            Text("Analyzing medications with AI...")
+            Text("Analyzing medications...")
                 .font(.headline)
                 .foregroundColor(.lightText)
-            
-            Text("This may take a moment")
-                .font(.caption)
-                .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
     }
-    
-    // MARK: - Review Section
-    
-    private var reviewSection: some View {
-        VStack(spacing: 20) {
-            // Header with name input
-            VStack(spacing: 16) {
-                HStack {
-                    Image(systemName: "pencil.circle.fill")
-                        .foregroundColor(.orange)
-                        .font(.title2)
-                    
-                    Text("Review Schedule")
-                        .font(.title2.bold())
-                        .foregroundColor(.lightText)
-                    
-                    Spacer()
-                }
-                
-                TextField("Schedule Name (e.g., Patient Name)", text: $viewModel.scheduleName)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .padding(.vertical, 8)
-                
-                HStack {
-                    Button("Cancel") {
-                        viewModel.resetFlow()
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                    
-                    Button("Approve") {
-                        viewModel.approveSchedule()
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                }
-            }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(Color.cardBackground)
-            )
-            .padding(.horizontal)
-            
-            // Warnings
-            if let result = viewModel.analysisResult, !result.warnings.isEmpty {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
-                        Text("Clinical Alerts")
-                            .font(.headline)
-                            .foregroundColor(.red)
-                    }
-                    
-                    ForEach(result.warnings) { warning in
-                        HStack(alignment: .top, spacing: 12) {
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 6, height: 6)
-                                .padding(.top, 6)
-                            
-                            Text(warning.description)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.red.opacity(0.1))
-                )
-                .padding(.horizontal)
-            }
-            
-            // Medications and Schedule
-            if let result = viewModel.analysisResult {
-                ReconciliationMedicationList(medications: result.medications)
-                    .padding(.horizontal)
-                
-                ReconciliationScheduleView(
-                    schedule: result.schedule,
-                    medications: result.medications,
-                    isEditable: true,
-                    onMove: { medId, from, to in
-                        viewModel.moveMedication(id: medId, from: from, to: to)
-                    }
-                )
-                .padding(.horizontal)
-            }
-        }
-    }
-    
-    // MARK: - Approved Section
-    
-    private var approvedSection: some View {
-        VStack(spacing: 20) {
-            // Success Banner
-            VStack(spacing: 16) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(.green)
-                
-                Text("Schedule Approved")
-                    .font(.title.bold())
-                    .foregroundColor(.lightText)
-                
-                Text("for \(viewModel.scheduleName)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                
-                // Language Picker
-                HStack {
-                    Text("Language:")
-                        .foregroundColor(.secondary)
-                    
-                    Picker("Language", selection: $viewModel.selectedLanguage) {
-                        Text("English").tag("English")
-                        Text("Spanish").tag("Spanish")
-                        Text("Chinese").tag("Chinese (Simplified)")
-                        Text("French").tag("French")
-                        Text("German").tag("German")
-                    }
-                    .pickerStyle(.menu)
-                }
-                .padding()
-                .background(Color.cardBackground.opacity(0.5))
-                .cornerRadius(12)
-                
-                HStack(spacing: 12) {
-                    Button(action: { viewModel.exportToPDF() }) {
-                        Label("Export PDF", systemImage: "arrow.down.doc")
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                    
-                    Button(action: { viewModel.resetFlow() }) {
-                        Label("New Scan", systemImage: "plus.circle")
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                }
-            }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(Color.green.opacity(0.1))
-            )
-            .padding(.horizontal)
-            
-            // Schedule Preview
-            if let result = viewModel.displayResult {
-                ReconciliationScheduleView(
-                    schedule: result.schedule,
-                    medications: result.medications,
-                    warnings: result.warnings,
-                    isEditable: false,
-                    scheduleName: viewModel.scheduleName,
-                    labels: viewModel.translatedLabels
-                )
-                .padding(.horizontal)
-            }
-        }
-    }
 }
 
-#Preview {
-    MedicationReconciliationView()
+// Extension to make TimeSlot Identifiable for sheet presentation
+extension TimeSlot: Identifiable {
+    public var id: String { self.rawValue }
 }

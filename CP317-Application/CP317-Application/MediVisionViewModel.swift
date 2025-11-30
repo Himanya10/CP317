@@ -1,5 +1,5 @@
 //
-//  MedicationReconciliationViewModel.swift
+//  MediVisionViewModel.swift
 //  CP317-Application
 //
 
@@ -18,14 +18,21 @@ enum ReconciliationStatus {
 class MedicationReconciliationViewModel: ObservableObject {
     
     enum ScanType {
-            case bottleLabel
-            case instructionSheet
-        }
+        case bottleLabel
+        case instructionSheet
+    }
+    
     // MARK: - Published Properties
     
     @Published var status: ReconciliationStatus = .idle
     @Published var selectedImages: [UIImage] = []
-    @Published var analysisResult: MedicationAnalysisResult?
+    
+    // This holds the current result being reviewed (from a new scan)
+    @Published var currentScanResult: MedicationAnalysisResult?
+    
+    // This holds the MASTER schedule (persistent)
+    @Published var masterSchedule: MedicationAnalysisResult = MedicationAnalysisResult()
+    
     @Published var scheduleName: String = ""
     @Published var errorMessage: String?
     @Published var history: [MedicationHistoryRecord] = []
@@ -47,18 +54,20 @@ class MedicationReconciliationViewModel: ObservableObject {
     
     private let service = MedicationGeminiService.shared
     private let historyKey = "medicationReconciliationHistory"
+    private let masterScheduleKey = "masterMedicationSchedule" // Key for saving the main schedule
     
     // MARK: - Computed Properties
     
-    var displayResult: MedicationAnalysisResult? {
+    var displayResult: MedicationAnalysisResult {
+        // If we have a translation, use it for display
         if let translated = translatedContent {
             return MedicationAnalysisResult(
                 medications: translated.medications,
-                schedule: analysisResult?.schedule ?? DailySchedule(),
+                schedule: masterSchedule.schedule, // Use master schedule structure
                 warnings: translated.warnings
             )
         }
-        return analysisResult
+        return masterSchedule
     }
     
     var translatedLabels: UILabels? {
@@ -69,6 +78,7 @@ class MedicationReconciliationViewModel: ObservableObject {
     
     init() {
         loadHistory()
+        loadMasterSchedule()
     }
     
     // MARK: - Image Management
@@ -99,7 +109,7 @@ class MedicationReconciliationViewModel: ObservableObject {
             do {
                 let result = try await service.analyzeMedicationImages(selectedImages)
                 await MainActor.run {
-                    self.analysisResult = result
+                    self.currentScanResult = result
                     self.status = .reviewPending
                 }
             } catch {
@@ -111,82 +121,96 @@ class MedicationReconciliationViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Schedule Management
+    // MARK: - Schedule Management (Master Schedule)
+    
+    func approveCurrentScan() {
+        guard let scan = currentScanResult else { return }
+        
+        // Merge scanned medications into master schedule
+        masterSchedule.medications.append(contentsOf: scan.medications)
+        masterSchedule.warnings.append(contentsOf: scan.warnings)
+        
+        // Merge schedule slots
+        for id in scan.schedule.morning { masterSchedule.schedule.morning.append(id) }
+        for id in scan.schedule.noon { masterSchedule.schedule.noon.append(id) }
+        for id in scan.schedule.evening { masterSchedule.schedule.evening.append(id) }
+        for id in scan.schedule.bedtime { masterSchedule.schedule.bedtime.append(id) }
+        
+        saveMasterSchedule()
+        
+        // Reset scan state but keep the view on the approved schedule
+        currentScanResult = nil
+        selectedImages.removeAll()
+        
+        // FIX: Reset to .idle so the system is ready for the NEXT scan immediately
+        status = .idle
+    }
+    
+    func deleteMedication(id: String) {
+        // Remove from medication list
+        masterSchedule.medications.removeAll { $0.id == id }
+        
+        // Remove from all time slots
+        masterSchedule.schedule.morning.removeAll { $0 == id }
+        masterSchedule.schedule.noon.removeAll { $0 == id }
+        masterSchedule.schedule.evening.removeAll { $0 == id }
+        masterSchedule.schedule.bedtime.removeAll { $0 == id }
+        
+        saveMasterSchedule()
+    }
+    
+    func updateMedication(_ updatedMed: Medication) {
+        if let index = masterSchedule.medications.firstIndex(where: { $0.id == updatedMed.id }) {
+            masterSchedule.medications[index] = updatedMed
+            saveMasterSchedule()
+        }
+    }
     
     func moveMedication(id: String, from: TimeSlot, to: TimeSlot) {
-        guard var result = analysisResult else { return }
-        
         // Remove from old slot
-        result.schedule[from].removeAll { $0 == id }
+        masterSchedule.schedule[from].removeAll { $0 == id }
         
         // Add to new slot if not already there
-        if !result.schedule[to].contains(id) {
-            result.schedule[to].append(id)
+        if !masterSchedule.schedule[to].contains(id) {
+            masterSchedule.schedule[to].append(id)
         }
         
-        analysisResult = result
+        saveMasterSchedule()
     }
     
-    func updateMedication(id: String, field: WritableKeyPath<Medication, String>, value: String) {
-        guard var result = analysisResult else { return }
-        
-        if let index = result.medications.firstIndex(where: { $0.id == id }) {
-            result.medications[index][keyPath: field] = value
-            analysisResult = result
-        }
-    }
-    
-    func approveSchedule() {
-        guard let result = analysisResult else { return }
-        
-        let finalName = scheduleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Schedule \(history.count + 1)"
-            : scheduleName
-        
-        scheduleName = finalName
-        
-        let record = MedicationHistoryRecord(
-            date: Date(),
-            scheduleName: finalName,
-            data: result
+    func addNewManualMedication(name: String, dosage: String, frequency: String, timeSlot: TimeSlot) {
+        let newMed = Medication(
+            name: name,
+            dosage: dosage,
+            frequency: frequency,
+            instructions: "Manually added",
+            source: .home,
+            category: .prescription
         )
         
-        history.insert(record, at: 0)
-        saveHistory()
-        
-        status = .approved
+        masterSchedule.medications.append(newMed)
+        masterSchedule.schedule[timeSlot].append(newMed.id)
+        saveMasterSchedule()
     }
     
     func resetFlow() {
         selectedImages.removeAll()
-        analysisResult = nil
-        scheduleName = ""
-        translatedContent = nil
-        selectedLanguage = "English"
-        errorMessage = nil
+        currentScanResult = nil
+        // We do NOT reset masterSchedule here, as we want to keep the schedule
         status = .idle
-    }
-    
-    func loadFromHistory(_ record: MedicationHistoryRecord) {
-        analysisResult = record.data
-        scheduleName = record.scheduleName
-        translatedContent = nil
-        selectedLanguage = "English"
-        status = .approved
     }
     
     // MARK: - Translation
     
     private func translateSchedule() {
-        guard let result = analysisResult, selectedLanguage != "English" else {
-            return
-        }
+        // Translate the MASTER schedule
+        guard !masterSchedule.medications.isEmpty, selectedLanguage != "English" else { return }
         
         isTranslating = true
         
         Task {
             do {
-                let translated = try await service.translateSchedule(result, to: selectedLanguage)
+                let translated = try await service.translateSchedule(masterSchedule, to: selectedLanguage)
                 await MainActor.run {
                     self.translatedContent = translated
                     self.isTranslating = false
@@ -204,16 +228,16 @@ class MedicationReconciliationViewModel: ObservableObject {
     // MARK: - PDF Export
     
     func exportToPDF() {
-        guard let result = displayResult else { return }
+        let result = displayResult
         
         let pdfGenerator = MediVisionPDFGenerator()
-        let fileName = "\(scheduleName)-\(selectedLanguage).pdf"
+        let fileName = "MedicationSchedule-\(selectedLanguage).pdf"
         
         if let url = pdfGenerator.generatePDF(
             schedule: result.schedule,
             medications: result.medications,
             warnings: result.warnings,
-            scheduleName: scheduleName,
+            scheduleName: scheduleName.isEmpty ? "My Schedule" : scheduleName,
             labels: translatedLabels,
             fileName: fileName
         ) {
@@ -232,7 +256,22 @@ class MedicationReconciliationViewModel: ObservableObject {
         }
     }
     
-    // MARK: - History Management
+    // MARK: - Persistence
+    
+    private func saveMasterSchedule() {
+        if let encoded = try? JSONEncoder().encode(masterSchedule) {
+            UserDefaults.standard.set(encoded, forKey: masterScheduleKey)
+        }
+    }
+    
+    private func loadMasterSchedule() {
+        if let data = UserDefaults.standard.data(forKey: masterScheduleKey),
+           let decoded = try? JSONDecoder().decode(MedicationAnalysisResult.self, from: data) {
+            masterSchedule = decoded
+            // FIX: Set to idle so the add button works even if we have existing data
+            status = .idle
+        }
+    }
     
     private func saveHistory() {
         if let encoded = try? JSONEncoder().encode(history) {
@@ -245,10 +284,5 @@ class MedicationReconciliationViewModel: ObservableObject {
            let decoded = try? JSONDecoder().decode([MedicationHistoryRecord].self, from: data) {
             history = decoded
         }
-    }
-    
-    func deleteHistoryRecord(_ record: MedicationHistoryRecord) {
-        history.removeAll { $0.id == record.id }
-        saveHistory()
     }
 }

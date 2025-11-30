@@ -10,7 +10,8 @@ class MedicationGeminiService {
     static let shared = MedicationGeminiService()
     
     private let apiKey = Config.geminiAPIKey
-    private let endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    // UPDATED: Changed from 'gemini-1.5-flash' to 'gemini-2.5-flash' to fix 404 error
+    private let endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     
     private init() {}
     
@@ -111,7 +112,11 @@ class MedicationGeminiService {
             throw MedicationError.invalidResponse
         }
         
+        // Detailed error logging for debugging
         guard httpResponse.statusCode == 200 else {
+            if let errorBody = String(data: data, encoding: .utf8) {
+                print("DEBUG: MediVision Gemini Error \(httpResponse.statusCode): \(errorBody)")
+            }
             throw MedicationError.httpError(statusCode: httpResponse.statusCode)
         }
         
@@ -299,7 +304,7 @@ class MedicationGeminiService {
     private func parseAnalysisResult(_ text: String) throws -> MedicationAnalysisResult {
         var cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Remove markdown code blocks
+        // Clean markdown
         if cleanText.hasPrefix("```json") {
             cleanText = cleanText.replacingOccurrences(of: "```json", with: "")
         }
@@ -322,7 +327,7 @@ class MedicationGeminiService {
     private func parseTranslationResult(_ text: String) throws -> TranslatedContent {
         var cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Remove markdown code blocks
+        // Clean markdown
         if cleanText.hasPrefix("```json") {
             cleanText = cleanText.replacingOccurrences(of: "```json", with: "")
         }

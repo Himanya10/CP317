@@ -13,5 +13,5 @@
 import Foundation
 
 struct Config {
-    static let geminiAPIKey = "AIzaSyAOJlWRr0_CYnVKKtLT2uY8q2GcQF3yFvE"
+    static let geminiAPIKey = "AIzaSyCz60sLrbdzEzGjxGCTtQawRXO9WXACtH0"
 }
