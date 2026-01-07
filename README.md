@@ -49,7 +49,6 @@ This project follows a 12-week development plan as outlined in the proposal.
 * **Mathew Rantisi** (ID: 169066313)
 * **Ethan Phadke** (ID: 169062677)
 * **Samiha Mridha** (ID: 169060718)
-* **Avishay Chauhan**
 
 ## 📚 References
 * **Apple Inc. (2023).** HealthKit Documentation. Developer.apple.com/healthkit
