@@ -1,6 +1,6 @@
 # VitalSync: Integrated Health Monitoring and Wellness Optimization Platform
 
-**VitalSync** is an all-encompassing health tracking platform designed to combine information from various wearable items—such as Apple Watch, Fitbit, Garmin, and smartphone-based sensors—to provide personalized health information and preventative wellness suggestions.
+**VitalSync** is a health tracking platform designed to combine information from various wearable items—such as Apple Watch, Fitbit, Garmin, and smartphone-based sensors—to provide personalized health information and preventative wellness suggestions.
 
 ## 📖 Table of Contents
 * [About the Project](#about-the-project)
